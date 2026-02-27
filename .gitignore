@@ -1,0 +1,19 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+.env
+
+# Data and Storage (ห้ามเอาไฟล์ Data ขึ้น Git เด็ดขาด)
+data/
+
+# Prefect backend database (ถ้ามีรัน local)
+prefect.db
+
+# OS generated files
+.DS_Store
+Thumbs.db
