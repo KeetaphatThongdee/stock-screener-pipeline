@@ -1,0 +1,20 @@
+services:
+  stock-scraper:
+    build: .
+    container_name: stock-scraper
+
+    environment:
+      - TZ=Asia/Bangkok
+      - RUN_HOUR=8
+      - RUN_MINUTE=0
+      - PREFECT_HOME=/data/prefect
+    volumes:
+      - ./data:/data
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
