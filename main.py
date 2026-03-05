@@ -6,6 +6,7 @@ import time
 import random
 import logging
 import shutil
+import signal
 from prefect import task, flow, get_run_logger
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
@@ -25,10 +26,9 @@ SESSION_DIR = os.path.join(DATA_DIR, "session")
 os.makedirs(SESSION_DIR, exist_ok=True)
 COOKIE_FILE = os.path.join(SESSION_DIR, "session_cookies.json")
 
-# Data retention: เก็บข้อมูลย้อนหลังกี่วัน ลบ partition เก่ากว่านี้อัตโนมัติ
-# ปรับผ่าน env var RETENTION_DAYS ได้โดยไม่ต้อง rebuild image
-import os as _os
-RETENTION_DAYS = int(_os.getenv("RETENTION_DAYS", 90))
+# Data retention: เก็บข้อมูลย้อนหลังกี่วัน ลบ partition เก่าอัตโนมัติ
+# ปรับผ่าน env var RETENTION_DAYS ได้
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", 90))
 
 # Fetch settings
 CONNECT_TIMEOUT = 10   # ถ้า server ไม่รับ connection = server down 
@@ -115,6 +115,7 @@ API_LIST = [
         "description": "Recent IPOs - Last 200 (US)"
     }
 ]
+
 
 def refresh_session_with_playwright() -> dict:
     logger.info("Starting Playwright to capture real API headers...")
@@ -268,6 +269,7 @@ def extract_items(json_data) -> list:
 
     return []
 
+
 @task(name="Init Session")
 def init_session() -> dict:
     log = get_run_logger()
@@ -395,6 +397,7 @@ def save_silver_layer(json_data: dict, filename: str):
     df.to_parquet(file_path, index=False)
     log.info("SILVER saved: %s (%d rows)", file_path, len(df))
 
+
 @task(name="Cleanup Old Partitions")
 def cleanup_old_partitions():
     log = get_run_logger()
@@ -441,6 +444,7 @@ def cleanup_old_partitions():
 # ---------------------------------------------------------
 # Main Flow
 # ---------------------------------------------------------
+
 
 @flow(name="Stock Scraper (Medallion Architecture)")
 def main_flow():
@@ -533,9 +537,6 @@ def main_flow():
 
 
 if __name__ == "__main__":
-    import signal
-    from datetime import timedelta
-
     running = True
     def _handle_signal(sig, frame):
         global running
