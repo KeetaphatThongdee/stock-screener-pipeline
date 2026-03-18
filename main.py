@@ -113,6 +113,49 @@ API_LIST = [
         "name": "us_ipo_recent",
         "url": "https://stockanalysis.com/api/screener/s/f?m=ipoDate&s=desc&c=s,exchange,ipoPrice,sharesOffered,ds,ipoDate&cn=200&i=histip-recent",
         "description": "Recent IPOs - Last 200 (US)"
+    },
+    # --- Trending Today (Top 20 by views) ---
+    {
+        "name": "us_trending",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=views&s=desc&c=no,s,views,tr1m,tr6m,trYTD,tr1y,tr5y,tr10y&cn=20&f=views-over-1&p=1&i=stocks",
+        "description": "Trending Today - Top 20 (US)"
+    },
+    # --- Market Movers ---
+    {
+        "name": "us_top_gainers",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=change&s=desc&c=no,s,n,change,price,volume,marketCap&cn=20&f=change-over-0,priceDate-isLastTradingDay&p=1&i=stocks",
+        "description": "Top Gainers Today (US)"
+    },
+    {
+        "name": "us_top_losers",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=change&s=asc&c=no,s,n,change,price,volume,marketCap&cn=20&f=change-under-0,priceDate-isLastTradingDay&p=1&i=stocks",
+        "description": "Top Losers Today (US)"
+    },
+    {
+        "name": "us_most_active",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=volume&s=desc&c=no,s,volume,price,ma50,ma200,beta,rsi&cn=20&f=volume-over-0,priceDate-isLastTradingDay&p=1&i=stocks",
+        "description": "Most Active Today (US)"
+    },
+    # --- Pre/After Market ---
+    {
+        "name": "us_premarket_gainers",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=premarketChangePercent&s=desc&c=no,s,n,premarketChangePercent,premarketPrice,premarketVolume,marketCap&cn=20&f=premarketChangePercent-over-0,premarketDate-isLastTradingDay&p=1&i=stocks",
+        "description": "Premarket Gainers (US)"
+    },
+    {
+        "name": "us_premarket_losers",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=premarketChangePercent&s=asc&c=no,s,n,premarketChangePercent,premarketPrice,premarketVolume,marketCap&cn=20&f=premarketChangePercent-under-0,premarketDate-isLastTradingDay&p=1&i=stocks",
+        "description": "Premarket Losers (US)"
+    },
+    {
+        "name": "us_afterhours_gainers",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=postmarketChangePercent&s=desc&c=no,s,n,postmarketChangePercent,postmarketPrice,postClose,marketCap&cn=20&f=postmarketChangePercent-over-0,postmarketDate-isLastTradingDay&p=1&i=stocks",
+        "description": "After Hours Gainers (US)"
+    },
+    {
+        "name": "us_afterhours_losers",
+        "url": "https://stockanalysis.com/api/screener/s/f?m=postmarketChangePercent&s=asc&c=no,s,n,postmarketChangePercent,postmarketPrice,postClose,marketCap&cn=20&f=postmarketChangePercent-under-0,postmarketDate-isLastTradingDay&p=1&i=stocks",
+        "description": "After Hours Losers (US)"
     }
 ]
 
