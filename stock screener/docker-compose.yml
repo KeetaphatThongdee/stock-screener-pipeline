@@ -3,8 +3,12 @@ services:
     build: .
     container_name: stock-scraper
 
-    env_file:
-      - .env
+    environment:
+      - TZ=Asia/Bangkok
+      - RUN_HOUR=8
+      - RUN_MINUTE=0
+      - PREFECT_HOME=/data/prefect
+      - RETENTION_DAYS=90
 
     volumes:
       - ./data:/data

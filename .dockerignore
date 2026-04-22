@@ -1,0 +1,26 @@
+# Data
+data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment & secrets
+.env
+venv/
+env/
+
+# Database files
+*.db
+
+# Git history
+.git/
+.gitignore
+
+# Test files
+test_*.py
+
+# OS generated files
+.DS_Store
+Thumbs.db

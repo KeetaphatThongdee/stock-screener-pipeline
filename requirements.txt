@@ -1,5 +1,5 @@
-requests
-prefect
-playwright
-pandas
-pyarrow
+requests==2.32.5
+prefect==3.6.15
+playwright==1.57.0
+pandas==2.3.3
+pyarrow==23.0.1

@@ -26,20 +26,4 @@ RUN playwright install chromium
 # copy โค้ด (แยก layer ไว้ท้ายสุด เพราะเปลี่ยนบ่อยที่สุด)
 COPY . .
 
-# HEALTHCHECK เช็คว่า silver partition ของวันนี้ถูกสร้างแล้ว
-# --start-period=5m  : รอให้ startup run เสร็จก่อนเริ่ม check
-# --interval=30m     : check ทุก 30 นาที (pipeline รันวันละครั้ง ไม่ต้องถี่)
-# --timeout=10s      : ถ้า check ค้างเกิน 10s ถือว่า fail
-# --retries=2        : fail 2 ครั้งติดต่อกันถึงจะ mark เป็น unhealthy
-HEALTHCHECK --start-period=5m --interval=30m --timeout=10s --retries=2 \
-    CMD python -c "\
-import os, sys, datetime; \
-today = datetime.date.today().isoformat(); \
-silver = '/data/silver'; \
-found = any( \
-    os.path.isdir(os.path.join(silver, cat, f'date={today}')) \
-    for cat in os.listdir(silver) \
-) if os.path.isdir(silver) else False; \
-sys.exit(0 if found else 1)"
-
 CMD ["python", "main.py"]
