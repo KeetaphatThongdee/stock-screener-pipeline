@@ -1,5 +1,0 @@
-requests
-prefect
-playwright
-pandas
-pyarrow
