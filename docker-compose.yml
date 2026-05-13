@@ -11,8 +11,125 @@ services:
 
     restart: unless-stopped
 
+    # Network isolation — ใช้ internal network สำหรับ service-to-service
+    # ถ้าอนาคตเพิ่ม Prefect server หรือ DB จะสื่อสารผ่าน network นี้
+    networks:
+      - pipeline-net
+
+    # depends_on — uncomment เมื่อเพิ่ม service อื่น
+    # depends_on:
+    #   prefect-server:
+    #     condition: service_healthy
+    #   postgres:
+    #     condition: service_healthy
+
+    # Resource limits — ป้องกัน container กิน resource เกิน
+    # Chromium + Pandas ใช้ memory เยอะตอน scrape + merge Gold
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.5"
+        reservations:
+          memory: 512m
+          cpus: "0.5"
+
+    # --- Security Hardening ---
+    # no-new-privileges: ป้องกัน process ภายใน container ยกระดับสิทธิ์
+    # (เช่น ผ่าน setuid binary) — defense-in-depth ร่วมกับ non-root user ใน Dockerfile
+    security_opt:
+      - no-new-privileges:true
+
+    # tmpfs: ให้ /tmp เป็น memory-backed filesystem
+    # ป้องกัน temp files หลุดค้างบน disk และเร็วกว่า disk I/O
+    tmpfs:
+      - /tmp:size=100m
+
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+    labels:
+      - "app=stock-scraper"
+      - "tier=data-pipeline"
+
+  # --- Dashboard: Streamlit monitoring UI ---
+  dashboard:
+    build: .
+    container_name: stock-dashboard
+    command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+    ports:
+      - "8501:8501"
+    volumes:
+      # read-only mount — dashboard ไม่จำเป็นต้องเขียนลง data volume
+      - ./data:/data:ro
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+    # --- Security Hardening ---
+    security_opt:
+      - no-new-privileges:true
+    # read_only: filesystem ของ container เป็น read-only
+    # ป้องกันการเขียนไฟล์โดยไม่ได้ตั้งใจ (เช่น malicious payload)
+    read_only: true
+    tmpfs:
+      - /tmp:size=50m
+      # Streamlit ต้องเขียน config ที่ ~/.streamlit เมื่อ start
+      # ถ้าไม่มี tmpfs นี้ จะ crash เพราะ read_only: true
+      - /home/appuser/.streamlit:size=10m
+
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    labels:
+      - "app=stock-dashboard"
+      - "tier=monitoring"
+
+  # --- Future services (uncomment เมื่อต้องการ) ---
+  #
+  # prefect-server:
+  #   image: prefecthq/prefect:3-python3.11
+  #   command: prefect server start --host 0.0.0.0
+  #   ports:
+  #     - "4200:4200"
+  #   networks:
+  #     - pipeline-net
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_DB: pipeline
+  #     POSTGRES_USER: pipeline
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   networks:
+  #     - pipeline-net
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U pipeline"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+networks:
+  pipeline-net:
+    driver: bridge
+    name: stock-pipeline-network
+
+# volumes:
+#   pgdata:

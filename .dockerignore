@@ -24,3 +24,12 @@ test_*.py
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Documentation (ไม่จำเป็นใน Docker image)
+docs/
+*.md
+!requirements.txt
+
+# IDE / agent
+.gemini/
+.vscode/

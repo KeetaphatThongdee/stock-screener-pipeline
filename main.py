@@ -29,6 +29,13 @@ SESSION_DIR = os.path.join(DATA_DIR, "session")
 os.makedirs(SESSION_DIR, exist_ok=True)
 COOKIE_FILE = os.path.join(SESSION_DIR, "session_cookies.json")
 
+# Security: จำกัดสิทธิ์ session directory เฉพาะ owner (0o700)
+# ป้องกันไม่ให้ user อื่นใน container อ่าน cookies/headers ได้
+try:
+    os.chmod(SESSION_DIR, 0o700)
+except OSError:
+    pass  # Windows ไม่รองรับ chmod — skip
+
 # Data retention: เก็บข้อมูลย้อนหลังกี่วัน ลบ partition เก่าอัตโนมัติ
 # ปรับผ่าน env var RETENTION_DAYS ได้
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", 90))
@@ -42,6 +49,10 @@ REQUEST_TIMEOUT = (CONNECT_TIMEOUT, READ_TIMEOUT)
 # รองรับ Discord, Slack, หรือ webhook ทั่วไป — ถ้าไม่ตั้งค่าจะ skip
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")
 
+# Heartbeat: ส่ง success notification ทุกครั้งที่ pipeline รันสำเร็จ
+# เพื่อให้รู้ว่า pipeline ยัง alive อยู่ (default: false — แจ้งแค่ตอน fail)
+ALERT_ON_SUCCESS = os.getenv("ALERT_ON_SUCCESS", "false").lower() in ("true", "1", "yes")
+
 
 # Logger สำหรับ helper functions (ทำงานนอก Prefect context)
 # Prefect tasks/flow ใช้ get_run_logger() แทน เพื่อให้ log ขึ้น Prefect UI
@@ -52,30 +63,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _mask_sensitive(value: str, visible: int = 6) -> str:
+    """Mask ค่า sensitive สำหรับ logging — แสดงแค่ตัวอักษรแรก + ****
+    ป้องกัน webhook URL, API keys หลุดไปใน log files
+    """
+    if not value or len(value) <= visible:
+        return "****"
+    return value[:visible] + "****"
+
 # ---------------------------------------------------------------------------
 # DAILY_APIS: fundamental data — stockanalysis.com อัพเดตวันละครั้ง
 # RUN_MODE=DAILY → run ตอน 08:00 BKK
 # ---------------------------------------------------------------------------
 DAILY_APIS = [
     # --- Dividends ---
-    {"name": "us_dividend",  "url": "https://stockanalysis.com/api/screener/s/bd/dps+dividendYield+payoutRatio+dividendGrowth+payoutFrequency.json",                              "description": "Dividend Data (US)"},
-    {"name": "th_dividend",  "url": "https://stockanalysis.com/api/screener/s/bd/dps+dividendYield+payoutRatio+dividendGrowth.json?c=TH",                                         "description": "Dividend Data (TH)"},
+    {"name": "us_dividend",  "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=dps+dividendYield+payoutRatio+dividendGrowth+payoutFrequency",                              "description": "Dividend Data (US)"},
+    {"name": "th_dividend",  "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=dps+dividendYield+payoutRatio+dividendGrowth+payoutFrequency&c=TH",                                         "description": "Dividend Data (TH)"},
     # --- General ---
-    {"name": "us_general",   "url": "https://stockanalysis.com/api/screener/s/bd/isin+exchange+sector+country+founded+fiscalYearEnd+isPrimaryListing+payoutFrequency.json",        "description": "Company Profile (US)"},
-    {"name": "th_general",   "url": "https://stockanalysis.com/api/screener/s/bd/isin+exchange+sector+country+founded+fiscalYearEnd+isPrimaryListing+payoutFrequency.json?c=TH",   "description": "Company Profile (TH)"},
+    {"name": "us_general",   "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=isin+exchange+sector+country+founded+fiscalYearEnd+isPrimaryListing",        "description": "Company Profile (US)"},
+    {"name": "th_general",   "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=isin+sector+country+founded+fiscalYearEnd+isPrimaryListing&c=TH",   "description": "Company Profile (TH)"},
     # --- Financials ---
-    {"name": "us_financials","url": "https://stockanalysis.com/api/screener/s/bd/exchange+revenue+operatingIncome+netIncome+fcf+eps.json",                                        "description": "Financials (US)"},
-    {"name": "th_financials","url": "https://stockanalysis.com/api/screener/s/bd/exchange+revenue+operatingIncome+netIncome+fcf+eps.json?c=TH",                                   "description": "Financials (TH)"},
+    {"name": "us_financials","url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=revenue+operatingIncome+netIncome+fcf+eps",                                        "description": "Financials (US)"},
+    {"name": "th_financials","url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=revenue+operatingIncome+netIncome+fcf+eps&c=TH",                                   "description": "Financials (TH)"},
     # --- Analysis ---
-    {"name": "us_analysis",  "url": "https://stockanalysis.com/api/screener/s/bd/exchange+analystRatings+analystCount+priceTarget+priceTargetChange.json",                        "description": "Analyst Ratings (US)"},
-    {"name": "th_analysis",  "url": "https://stockanalysis.com/api/screener/s/bd/exchange+analystRatings+analystCount+priceTarget+priceTargetChange.json?c=TH",                   "description": "Analyst Ratings (TH)"},
+    {"name": "us_analysis",  "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=analystRatings+analystCount+priceTarget+priceTargetChange+exchange",                        "description": "Analyst Ratings (US)"},
+    {"name": "th_analysis",  "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=analystRatings+analystCount+priceTarget+priceTargetChange+exchange&c=TH",                   "description": "Analyst Ratings (TH)"},
     # --- Valuation ---
-    {"name": "us_valuation", "url": "https://stockanalysis.com/api/screener/s/bd/enterpriseValue+peForward+psRatio+pbRatio+pFcfRatio.json",                                       "description": "Valuation Ratios (US)"},
-    {"name": "th_valuation", "url": "https://stockanalysis.com/api/screener/s/bd/enterpriseValue+peForward+psRatio+pbRatio+pFcfRatio.json?c=TH",                                  "description": "Valuation Ratios (TH)"},
+    {"name": "us_valuation", "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=enterpriseValue+peForward+psRatio+pbRatio+pFcfRatio",                                       "description": "Valuation Ratios (US)"},
+    {"name": "th_valuation", "url": "https://stockanalysis.com/_api/endpoints/screener/data-points?type=s&ids=enterpriseValue+peForward+psRatio+pbRatio+pFcfRatio&c=TH",                                  "description": "Valuation Ratios (TH)"},
     # --- ETF / IPO / Trending ---
-    {"name": "us_etf",       "url": "https://stockanalysis.com/api/screener/e/f?m=s&s=asc&c=s,n,assetClass&cn=500&p=1&i=etf",                                                    "description": "ETF Overall (US)"},
-    {"name": "us_ipo_recent","url": "https://stockanalysis.com/api/screener/s/f?m=ipoDate&s=desc&c=s,exchange,ipoPrice,sharesOffered,ds,ipoDate&cn=200&i=histip-recent",           "description": "Recent IPOs - Last 200 (US)"},
-    {"name": "us_trending",  "url": "https://stockanalysis.com/api/screener/s/f?m=views&s=desc&c=no,s,views,tr1m,tr6m,trYTD,tr1y,tr5y,tr10y&cn=20&f=views-over-1&p=1&i=stocks",  "description": "Trending Today - Top 20 (US)"},
+    {"name": "us_etf",       "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=e&m=s&s=asc&c=s,price,change,volume,low52,low52ch,high52,high52ch&cn=500&p=1&i=etf",                                                    "description": "ETF Overall (US)"},
+    {"name": "us_ipo_recent","url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=ipoDate&s=desc&c=ipoDate,s,n,ipoPrice,ippc,ipr&cn=200&i=histip-recent",           "description": "Recent IPOs - Last 200 (US)"},
+    {"name": "us_trending",  "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=views&s=desc&c=no,s,views,tr1m,tr6m,trYTD,tr1y,tr5y,tr10y&cn=20&f=views-over-1&p=1&i=stocks",  "description": "Trending Today - Top 20 (US)"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -87,14 +107,14 @@ DAILY_APIS = [
 # ---------------------------------------------------------------------------
 INTRADAY_APIS = [
     # --- Market Movers ---
-    {"name": "us_top_gainers",        "url": "https://stockanalysis.com/api/screener/s/f?m=change&s=desc&c=no,s,n,change,price,volume,marketCap&cn=20&f=change-over-0,priceDate-isLastTradingDay&p=1&i=stocks",                                                             "description": "Top Gainers Today (US)"},
-    {"name": "us_top_losers",         "url": "https://stockanalysis.com/api/screener/s/f?m=change&s=asc&c=no,s,n,change,price,volume,marketCap&cn=20&f=change-under-0,priceDate-isLastTradingDay&p=1&i=stocks",                                                            "description": "Top Losers Today (US)"},
-    {"name": "us_most_active",        "url": "https://stockanalysis.com/api/screener/s/f?m=volume&s=desc&c=no,s,volume,price,ma50,ma200,beta,rsi&cn=20&f=volume-over-0,priceDate-isLastTradingDay&p=1&i=stocks",                                                           "description": "Most Active Today (US)"},
+    {"name": "us_top_gainers",        "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=change&s=desc&c=no,s,n,change,price,volume,marketCap&cn=20&f=change-over-0,priceDate-isLastTradingDay&p=1&i=stock-movers",                                                             "description": "Top Gainers Today (US)"},
+    {"name": "us_top_losers",         "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=change&s=asc&c=no,s,n,change,price,volume,marketCap&cn=20&f=change-under-0,priceDate-isLastTradingDay&p=1&i=stock-movers",                                                            "description": "Top Losers Today (US)"},
+    {"name": "us_most_active",        "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=volume&s=desc&c=no,s,volume,price,ma50,ma200,beta,rsi&cn=20&f=volume-over-0,priceDate-isLastTradingDay&p=1&i=stock-movers",                                                           "description": "Most Active Today (US)"},
     # --- Pre/After Market ---
-    {"name": "us_premarket_gainers",  "url": "https://stockanalysis.com/api/screener/s/f?m=premarketChangePercent&s=desc&c=no,s,n,premarketChangePercent,premarketPrice,premarketVolume,marketCap&cn=20&f=premarketChangePercent-over-0,premarketDate-isLastTradingDay&p=1&i=stocks",   "description": "Premarket Gainers (US)"},
-    {"name": "us_premarket_losers",   "url": "https://stockanalysis.com/api/screener/s/f?m=premarketChangePercent&s=asc&c=no,s,n,premarketChangePercent,premarketPrice,premarketVolume,marketCap&cn=20&f=premarketChangePercent-under-0,premarketDate-isLastTradingDay&p=1&i=stocks",    "description": "Premarket Losers (US)"},
-    {"name": "us_afterhours_gainers", "url": "https://stockanalysis.com/api/screener/s/f?m=postmarketChangePercent&s=desc&c=no,s,n,postmarketChangePercent,postmarketPrice,postClose,marketCap&cn=20&f=postmarketChangePercent-over-0,postmarketDate-isLastTradingDay&p=1&i=stocks",    "description": "After Hours Gainers (US)"},
-    {"name": "us_afterhours_losers",  "url": "https://stockanalysis.com/api/screener/s/f?m=postmarketChangePercent&s=asc&c=no,s,n,postmarketChangePercent,postmarketPrice,postClose,marketCap&cn=20&f=postmarketChangePercent-under-0,postmarketDate-isLastTradingDay&p=1&i=stocks",     "description": "After Hours Losers (US)"},
+    {"name": "us_premarket_gainers",  "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=premarketChangePercent&s=desc&c=no,s,n,premarketChangePercent,premarketPrice,premarketVolume,marketCap&cn=20&f=premarketChangePercent-over-0,premarketDate-isLastTradingDay&p=1&i=stock-movers",   "description": "Premarket Gainers (US)"},
+    {"name": "us_premarket_losers",   "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=premarketChangePercent&s=asc&c=no,s,n,premarketChangePercent,premarketPrice,premarketVolume,marketCap&cn=20&f=premarketChangePercent-under-0,premarketDate-isLastTradingDay&p=1&i=stock-movers",    "description": "Premarket Losers (US)"},
+    {"name": "us_afterhours_gainers", "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=postmarketChangePercent&s=desc&c=no,s,n,postmarketChangePercent,postmarketPrice,postClose,marketCap&cn=20&f=postmarketChangePercent-over-0,postmarketDate-isLastTradingDay&p=1&i=stock-movers",    "description": "After Hours Gainers (US)"},
+    {"name": "us_afterhours_losers",  "url": "https://stockanalysis.com/_api/endpoints/screener/table?type=s&m=postmarketChangePercent&s=asc&c=no,s,n,postmarketChangePercent,postmarketPrice,postClose,marketCap&cn=20&f=postmarketChangePercent-under-0,postmarketDate-isLastTradingDay&p=1&i=stock-movers",     "description": "After Hours Losers (US)"},
 ]
 
 # RUN_MODE → เลือก API list ที่จะ fetch ใน run นี้
@@ -165,12 +185,12 @@ GOLD_COMPUTED_COLUMNS: dict[str, list[tuple[str, str, callable]]] = {
 # ---------------------------------------------------------------------------
 EXPECTED_SCHEMA: dict[str, list[str]] = {
     "dividend":       ["s", "dps", "dividendYield", "payoutRatio", "dividendGrowth"],
-    "general":        ["s", "isin", "exchange", "sector", "country", "founded", "fiscalYearEnd"],
+    "general":        ["s", "isin", "exchange", "sector", "country", "founded", "fiscalYearEnd", "isPrimaryListing", "payoutFrequency"],
     "financials":     ["s", "exchange", "revenue", "operatingIncome", "netIncome", "fcf", "eps"],
     "analysis":       ["s", "exchange", "analystRatings", "analystCount", "priceTarget", "priceTargetChange"],
     "valuation":      ["s", "enterpriseValue", "peForward", "psRatio", "pbRatio", "pFcfRatio"],
     "etf":            ["s", "n", "assetClass"],
-    "ipo_recent":     ["s", "exchange", "ipoPrice", "sharesOffered", "ipoDate"],
+    "ipo_recent":     ["s", "exchange", "ipoPrice", "sharesOffered", "ds", "ipoDate"],
     "trending":       ["s", "views"],
     "top_gainers":    ["s", "n", "change", "price", "volume", "marketCap"],
     "top_losers":     ["s", "n", "change", "price", "volume", "marketCap"],
@@ -226,7 +246,7 @@ def _run_quality_checks(df: pd.DataFrame, filename: str, category: str, country:
     silver_category_dir = os.path.join(DATA_DIR, "silver", category)
     if os.path.isdir(silver_category_dir):
         # หา partition วันก่อนหน้าล่าสุด (ไม่นับวันนี้)
-        today_partition = f"date={df['fetched_at'].iloc[0].strftime('%Y-%m-%d')}"
+        today_partition = f"date={pd.Timestamp(df['fetched_at'].iloc[0]).strftime('%Y-%m-%d')}"
         prev_partitions = sorted([
             d for d in os.listdir(silver_category_dir)
             if d.startswith("date=") and d != today_partition
@@ -361,6 +381,11 @@ def refresh_session_with_playwright() -> dict:
             browser.close()
 
 
+def _is_valid_session(data: dict) -> bool:
+    """ตรวจว่า session data มี headers + cookies ครบ"""
+    return bool(data and data.get("headers") and data.get("cookies"))
+
+
 def build_requests_session(session_data: dict) -> requests.Session:
     """สร้าง requests.Session จาก session_data dict"""
     session = requests.Session()
@@ -385,7 +410,7 @@ def load_or_refresh_session() -> dict:
         try:
             with open(COOKIE_FILE, "r") as f:
                 data = json.load(f)
-            if data.get("headers") and data.get("cookies"):
+            if _is_valid_session(data):
                 logger.info("Loaded existing session from file (age: %.1fh).", age_hours)
                 return data
         except Exception:
@@ -442,14 +467,32 @@ def init_session() -> dict:
     return load_or_refresh_session()
 
 
+@task(name="Refresh Session (403)", retries=1, retry_delay_seconds=10)
+def refresh_session_task() -> dict:
+    """Prefect task wrapper สำหรับ refresh session หลังเจอ 403
+    แยกเป็น task เพื่อให้ Prefect track retry/logging ได้
+    """
+    log = get_run_logger()
+    log.warning("Refreshing session via Playwright (triggered by 403)...")
+    try:
+        return refresh_session_with_playwright()
+    except Exception as e:
+        log.error("Session refresh failed: %s", e)
+        return {}
+
+
 MAX_RETRIES = 3  # ใช้สำหรับทุก transient error (429, Timeout, ConnectionError)
 
 @task(name="Fetch Raw Data")
-def fetch_url(config_item: dict, session_data: dict) -> tuple[dict | None, bool]:
+def fetch_url(config_item: dict, session_data: dict, wave_delay: float = 0) -> tuple[dict | None, bool]:
     log = get_run_logger()
     name = config_item["name"]
     url = config_item["url"]
 
+    # wave_delay: stagger requests across waves เพื่อ rate-limit
+    # โดยไม่ต้อง block batch ก่อนหน้า (ถ้า task หนึ่งโดน 429 จะไม่บล็อกตัวอื่น)
+    if wave_delay > 0:
+        time.sleep(wave_delay)
     time.sleep(random.uniform(1.5, 3.5))
     log.info("Fetching: %s", name)
 
@@ -518,8 +561,11 @@ def fetch_url(config_item: dict, session_data: dict) -> tuple[dict | None, bool]
 
 
 @task(name="Save Bronze (JSON)")
-def save_bronze_layer(json_data: dict, filename: str, run_date: str):
-    """Save raw JSON to data/bronze/"""
+def save_bronze_layer(json_data: dict, filename: str, run_date: str) -> str | None:
+    """Save raw JSON to data/bronze/
+    ใช้ timestamp ใน filename เพื่อเก็บทุก snapshot (re-run ไม่ overwrite)
+    คืน file path ที่บันทึกสำเร็จ หรือ None ถ้า skip
+    """
     log = get_run_logger()
     if not json_data:
         log.warning("BRONZE skipped: %s (no data)", filename)
@@ -533,22 +579,23 @@ def save_bronze_layer(json_data: dict, filename: str, run_date: str):
     output_dir = os.path.join(DATA_DIR, "bronze", category, f"date={run_date}")
     os.makedirs(output_dir, exist_ok=True)
 
-    file_path = os.path.join(output_dir, f"{country}.json")
+    # timestamp ใน filename เพื่อเก็บทุก snapshot
+    # เช่น us_20260429T043000Z.json — ถ้า re-run จะไม่ overwrite ตัวก่อนหน้า
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    file_path = os.path.join(output_dir, f"{country}_{ts}.json")
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(json_data, f, ensure_ascii=False)
     log.info("BRONZE saved: %s", file_path)
+    return file_path
 
 
 @task(name="Save Silver (Parquet)")
-def save_silver_layer(json_data: dict, filename: str, run_date: str) -> list[str]:
-    """Extract table, convert to DataFrame, run DQ checks, save as Parquet in data/silver/
+def save_silver_layer(items: list, filename: str, run_date: str) -> list[str]:
+    """Convert items to DataFrame, run DQ checks, save as Parquet in data/silver/
+    รับ items ที่ extract แล้วจาก main_flow (ไม่ต้อง extract_items ซ้ำ)
     คืนค่า list of DQ warning strings (เพื่อให้ main_flow รวม summary ท้าย run)
     """
     log = get_run_logger()
-    if not json_data:
-        return []
-
-    items = extract_items(json_data)
     if not items:
         log.warning("No tabular data for %s. Skipping Silver.", filename)
         return []
@@ -576,7 +623,25 @@ def save_silver_layer(json_data: dict, filename: str, run_date: str) -> list[str
     # --- Data quality checks ก่อน save ---
     dq_warnings += _run_quality_checks(df, filename, category, country, log)
 
+    # --- Deduplication: ถ้า re-run ในวันเดียวกัน ให้ merge กับข้อมูลเดิม ---
+    # เก็บ row ล่าสุดตาม ticker 's' (ถ้ามี column 's')
     file_path = os.path.join(output_dir, f"{country}.parquet")
+    if os.path.exists(file_path) and "s" in df.columns:
+        try:
+            existing = pd.read_parquet(file_path)
+            before_count = len(df)
+            combined = pd.concat([existing, df], ignore_index=True)
+            # เก็บ row ล่าสุด (fetched_at มากสุด) ต่อ ticker
+            combined = combined.sort_values("fetched_at", ascending=False)
+            combined = combined.drop_duplicates(subset=["s"], keep="first")
+            df = combined.sort_index().reset_index(drop=True)
+            log.info("SILVER dedup: %s merged %d existing + %d new -> %d unique tickers",
+                     filename, len(existing), before_count, len(df))
+        except Exception as e:
+            log.warning("SILVER dedup failed for %s, saving new data only: %s", filename, e)
+    elif os.path.exists(file_path):
+        log.info("SILVER overwriting existing (no 's' column for dedup): %s", file_path)
+
     df.to_parquet(file_path, index=False)
     log.info("SILVER saved: %s (%d rows)", file_path, len(df))
 
@@ -630,19 +695,78 @@ def cleanup_old_partitions():
 
 
 
+def _run_gold_quality_checks(
+    merged: pd.DataFrame,
+    category: str,
+    silver_row_counts: list[int],
+    log,
+) -> list[str]:
+    """DQ checks สำหรับ Gold layer หลัง merge + computed columns
+    checks ที่ทำ:
+    1. Row count — merged ต้อง >= sum ของ silver inputs (กัน row หาย)
+    2. Market column — ต้องมี unique values ตามที่คาดหวัง
+    3. Computed columns — ถ้ามี computed column ที่เป็น NaN 100% → warning
+    """
+    warnings = []
+    expected_rows = sum(silver_row_counts)
+    actual_rows = len(merged)
+
+    # --- Check 1: Row count after merge ---
+    if actual_rows < expected_rows:
+        msg = (
+            f"GOLD {category}: row count after merge ({actual_rows}) "
+            f"< sum of silver inputs ({expected_rows}) — possible data loss"
+        )
+        log.warning("GOLD DQ WARNING: %s", msg)
+        warnings.append(msg)
+    else:
+        log.info("GOLD DQ OK -- %s row count: %d (expected %d)",
+                 category, actual_rows, expected_rows)
+
+    # --- Check 2: Market column completeness ---
+    if "market" in merged.columns:
+        markets = sorted(merged["market"].dropna().unique())
+        if not markets:
+            msg = f"GOLD {category}: 'market' column is empty after merge"
+            log.warning("GOLD DQ WARNING: %s", msg)
+            warnings.append(msg)
+        else:
+            log.info("GOLD DQ OK -- %s markets: %s", category, markets)
+
+    # --- Check 3: Computed columns ไม่ควรเป็น NaN 100% ---
+    computed_specs = GOLD_COMPUTED_COLUMNS.get(category, [])
+    for col_name, description, _ in computed_specs:
+        if col_name not in merged.columns:
+            continue
+        null_ratio = merged[col_name].isna().mean()
+        if null_ratio == 1.0:
+            msg = (
+                f"GOLD {category}: computed column '{col_name}' is 100% NaN "
+                f"({description})"
+            )
+            log.warning("GOLD DQ WARNING: %s", msg)
+            warnings.append(msg)
+        else:
+            log.info("GOLD DQ OK -- %s.%s null: %.1f%%",
+                     category, col_name, null_ratio * 100)
+
+    return warnings
+
+
 @task(name="Save Gold (Merged Parquet)")
-def save_gold_layer(run_date: str) -> int:
+def save_gold_layer(run_date: str) -> tuple[int, list[str]]:
     """Merge US + TH silver parquet per category, add computed columns,
     save to data/gold/{category}/date={run_date}/all.parquet
-    คืนค่าจำนวน categories ที่สร้าง Gold สำเร็จ
+    คืนค่า (จำนวน categories ที่สร้าง Gold สำเร็จ, list of DQ warnings)
     """
     log = get_run_logger()
     silver_base = os.path.join(DATA_DIR, "silver")
     gold_count = 0
+    all_warnings: list[str] = []
 
     if not os.path.isdir(silver_base):
         log.warning("GOLD skipped: silver directory not found.")
-        return 0
+        return 0, []
 
     # วน loop ทุก category ใน silver (dividend, general, financials, ...)
     today_partition = f"date={run_date}"
@@ -653,6 +777,7 @@ def save_gold_layer(run_date: str) -> int:
 
         # อ่านทุก parquet ใน partition (us.parquet, th.parquet, ...)
         frames = []
+        silver_row_counts = []
         for parquet_file in os.listdir(partition_dir):
             if not parquet_file.endswith(".parquet"):
                 continue
@@ -661,6 +786,7 @@ def save_gold_layer(run_date: str) -> int:
             try:
                 df = pd.read_parquet(file_path)
                 df["market"] = market
+                silver_row_counts.append(len(df))
                 frames.append(df)
                 log.info("GOLD read: %s/%s/%s (%d rows)",
                          category, today_partition, parquet_file, len(df))
@@ -688,6 +814,10 @@ def save_gold_layer(run_date: str) -> int:
             except (KeyError, TypeError, ZeroDivisionError) as e:
                 log.warning("GOLD skip computed '%s.%s': %s", category, col_name, e)
 
+        # --- DQ checks หลัง merge + computed ---
+        gold_warnings = _run_gold_quality_checks(merged, category, silver_row_counts, log)
+        all_warnings.extend(gold_warnings)
+
         # --- Save ---
         gold_dir = os.path.join(DATA_DIR, "gold", category, today_partition)
         os.makedirs(gold_dir, exist_ok=True)
@@ -702,7 +832,7 @@ def save_gold_layer(run_date: str) -> int:
     else:
         log.info("GOLD: %d category(ies) merged for %s.", gold_count, run_date)
 
-    return gold_count
+    return gold_count, all_warnings
 
 
 
@@ -715,7 +845,10 @@ def _send_alert_if_needed(
     meta: dict, run_mode: str, duration: float,
     total_rows: int, total_apis: int, log,
 ) -> None:
-    """ส่ง webhook alert ถ้ามี issue (failed, skipped, DQ warnings)
+    """Webhook notification — ส่งทั้งตอน fail และ success (heartbeat)
+    - มี issue (failed, skipped, DQ warnings) → ส่งเสมอ
+    - ไม่มี issue + ALERT_ON_SUCCESS=true → ส่ง heartbeat
+    - ไม่มี issue + ALERT_ON_SUCCESS=false → skip
     ถ้า ALERT_WEBHOOK_URL ไม่ได้ตั้งค่า จะ skip ทั้งหมด
     รองรับ Discord webhook (content) และ Slack webhook (text)
     """
@@ -723,11 +856,22 @@ def _send_alert_if_needed(
         return
 
     has_issues = meta["failed"] or meta["skipped"] or meta["dq_warnings"]
+
+    # --- Success heartbeat ---
     if not has_issues:
-        log.info("Alert: no issues detected, skipping notification.")
+        if not ALERT_ON_SUCCESS:
+            log.info("Alert: no issues detected, skipping notification.")
+            return
+        # ส่ง heartbeat ให้รู้ว่า pipeline ยัง alive
+        message = (
+            f"✅ **SUCCESS — Stock Pipeline ({run_mode})**\n"
+            f"APIs: {len(meta['success'])}/{total_apis} success | "
+            f"Duration: {duration:.0f}s | Rows: {total_rows}"
+        )
+        _send_webhook(message, log)
         return
 
-    # --- สร้าง message ---
+    # --- มี issue: สร้าง alert message ---
     lines = []
     status = "⚠️ WARNING" if not meta["failed"] else "🔴 ALERT"
     lines.append(f"**{status} — Stock Pipeline ({run_mode})**")
@@ -745,8 +889,12 @@ def _send_alert_if_needed(
             lines.append(f"  ... and {len(meta['dq_warnings']) - 5} more")
 
     message = "\n".join(lines)
+    _send_webhook(message, log)
 
-    # --- ส่ง webhook (รองรับทั้ง Discord และ Slack) ---
+
+def _send_webhook(message: str, log) -> None:
+    """ส่ง message ไปยัง webhook (รองรับทั้ง Discord และ Slack)"""
+    masked_url = _mask_sensitive(ALERT_WEBHOOK_URL)
     try:
         payload = {"content": message, "text": message}
         resp = requests.post(
@@ -755,12 +903,293 @@ def _send_alert_if_needed(
             timeout=10,
         )
         if resp.ok:
-            log.info("Alert sent successfully (HTTP %d).", resp.status_code)
+            log.info("Alert sent to %s (HTTP %d).", masked_url, resp.status_code)
         else:
-            log.warning("Alert webhook returned HTTP %d: %s", resp.status_code, resp.text[:200])
+            log.warning("Alert webhook %s returned HTTP %d: %s", masked_url, resp.status_code, resp.text[:200])
     except Exception as e:
-        log.warning("Alert webhook failed: %s", e)
+        log.warning("Alert webhook %s failed: %s", masked_url, e)
 
+
+# ---------------------------------------------------------
+# Trading Day Check
+# ---------------------------------------------------------
+
+# ข้าม weekend check สำหรับ testing/backfill (เช่น อยากรัน intraday วันเสาร์)
+SKIP_WEEKEND_CHECK = os.getenv("SKIP_WEEKEND_CHECK", "false").lower() in ("true", "1", "yes")
+
+
+def _is_us_trading_day() -> bool:
+    """เช็คว่าวันนี้เป็น US trading day (จันทร์-ศุกร์) หรือไม่
+    ใช้ US Eastern Time (UTC-5/UTC-4) เป็น reference
+    ตรวจเฉพาะ weekday เท่านั้น (ไม่รวม US holidays เช่น Independence Day, Thanksgiving)
+    """
+    # ใช้ UTC-5 เป็น EST แบบปลอดภัย (ต่างจาก EDT ไป 1 ชั่วโมง แต่ไม่กระทบ weekday check)
+    us_eastern = timezone(timedelta(hours=-5))
+    us_now = datetime.now(us_eastern)
+    # weekday(): 0=Mon, 1=Tue, ..., 5=Sat, 6=Sun
+    return us_now.weekday() < 5
+
+
+# ---------------------------------------------------------
+# Run Metrics Persistence (สำหรับ Dashboard)
+# ---------------------------------------------------------
+
+METRICS_DIR = os.path.join(DATA_DIR, "metrics", "runs")
+os.makedirs(METRICS_DIR, exist_ok=True)
+
+
+def _save_run_metrics(
+    meta: dict, run_mode: str, run_date: str,
+    run_start: datetime, duration: float, total_rows: int, log,
+) -> None:
+    """บันทึก run metadata เป็น JSON สำหรับ Dashboard อ่าน
+    ไฟล์: data/metrics/runs/{run_date}_{run_mode}_{timestamp}.json
+    """
+    ts = run_start.strftime("%Y%m%dT%H%M%SZ")
+    metrics = {
+        "run_mode": run_mode,
+        "run_date": run_date,
+        "start_time": run_start.isoformat(),
+        "duration_seconds": round(duration, 1),
+        "total_rows": total_rows,
+        "api_count": len(meta.get("success", [])) + len(meta.get("failed", [])) + len(meta.get("skipped", [])),
+        "success_count": len(meta.get("success", [])),
+        "failed_count": len(meta.get("failed", [])),
+        "skipped_count": len(meta.get("skipped", [])),
+        "success": meta.get("success", []),
+        "failed": meta.get("failed", []),
+        "skipped": meta.get("skipped", []),
+        "rows": meta.get("rows", {}),
+        "dq_warnings": meta.get("dq_warnings", []),
+        "session_type": meta.get("session_type", "unknown"),
+    }
+    filename = f"{run_date}_{run_mode}_{ts}.json"
+    filepath = os.path.join(METRICS_DIR, filename)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2, default=str)
+        log.info("Run metrics saved: %s", filepath)
+    except Exception as e:
+        log.warning("Could not save run metrics: %s", e)
+
+
+# ---------------------------------------------------------
+# Change Detection / Anomaly Detection
+# ---------------------------------------------------------
+
+CHANGES_DIR = os.path.join(DATA_DIR, "metrics", "changes")
+os.makedirs(CHANGES_DIR, exist_ok=True)
+
+# Thresholds สำหรับ detect การเปลี่ยนแปลงที่สำคัญ (percent change)
+CHANGE_THRESHOLDS: dict[str, list[tuple[str, float]]] = {
+    "dividend":   [("dividendYield", 0.20)],        # yield เปลี่ยน >20%
+    "analysis":   [("priceTarget", 0.15)],           # price target เปลี่ยน >15%
+    "financials": [("eps", 0.25), ("revenue", 0.20)], # EPS >25%, revenue >20%
+    "valuation":  [("peForward", 0.25)],             # PE เปลี่ยน >25%
+}
+
+# Categorical fields — detect เมื่อค่าเปลี่ยน (ไม่ใช่ numeric)
+CATEGORICAL_CHANGES: dict[str, list[str]] = {
+    "analysis": ["analystRatings"],  # เช่น Hold → Buy
+}
+
+
+def _find_prev_partition(category: str, today_date: str) -> str | None:
+    """หา partition วันก่อนหน้าล่าสุดของ category (ไม่นับวันนี้)"""
+    cat_dir = os.path.join(DATA_DIR, "silver", category)
+    if not os.path.isdir(cat_dir):
+        return None
+    today_part = f"date={today_date}"
+    partitions = sorted([
+        d for d in os.listdir(cat_dir)
+        if d.startswith("date=") and d != today_part
+    ], reverse=True)
+    return partitions[0].replace("date=", "") if partitions else None
+
+
+def _detect_numeric_changes(
+    today_df: pd.DataFrame, prev_df: pd.DataFrame,
+    category: str, market: str, fields: list[tuple[str, float]],
+) -> list[dict]:
+    """เปรียบเทียบ numeric fields ระหว่าง 2 partitions"""
+    changes = []
+    if "s" not in today_df.columns or "s" not in prev_df.columns:
+        return changes
+
+    merged = today_df.merge(prev_df, on="s", suffixes=("_new", "_old"), how="inner")
+
+    for col, threshold in fields:
+        col_new = f"{col}_new"
+        col_old = f"{col}_old"
+        if col_new not in merged.columns or col_old not in merged.columns:
+            continue
+
+        # คำนวณ percent change (ข้ามแถวที่ old = 0 หรือ NaN)
+        mask = merged[col_old].notna() & merged[col_new].notna() & (merged[col_old] != 0)
+        subset = merged[mask].copy()
+        if subset.empty:
+            continue
+
+        subset["_pct_change"] = ((subset[col_new] - subset[col_old]) / subset[col_old].abs())
+
+        # filter เฉพาะที่เปลี่ยนเกิน threshold
+        significant = subset[subset["_pct_change"].abs() > threshold]
+
+        for _, row in significant.iterrows():
+            changes.append({
+                "ticker": row["s"],
+                "category": category,
+                "market": market,
+                "field": col,
+                "old_value": round(float(row[col_old]), 4) if pd.notna(row[col_old]) else None,
+                "new_value": round(float(row[col_new]), 4) if pd.notna(row[col_new]) else None,
+                "pct_change": round(float(row["_pct_change"]) * 100, 2),
+                "type": "numeric_change",
+            })
+    return changes
+
+
+def _detect_categorical_changes(
+    today_df: pd.DataFrame, prev_df: pd.DataFrame,
+    category: str, market: str, fields: list[str],
+) -> list[dict]:
+    """เปรียบเทียบ categorical fields (เช่น analystRatings)"""
+    changes = []
+    if "s" not in today_df.columns or "s" not in prev_df.columns:
+        return changes
+
+    merged = today_df.merge(prev_df, on="s", suffixes=("_new", "_old"), how="inner")
+
+    for col in fields:
+        col_new = f"{col}_new"
+        col_old = f"{col}_old"
+        if col_new not in merged.columns or col_old not in merged.columns:
+            continue
+
+        # filter: ทั้งสองค่าต้องไม่ใช่ None/NaN และต้องต่างกัน
+        mask = merged[col_old].notna() & merged[col_new].notna()
+        subset = merged[mask]
+        changed = subset[subset[col_old].astype(str) != subset[col_new].astype(str)]
+
+        for _, row in changed.iterrows():
+            changes.append({
+                "ticker": row["s"],
+                "category": category,
+                "market": market,
+                "field": col,
+                "old_value": str(row[col_old]),
+                "new_value": str(row[col_new]),
+                "pct_change": None,
+                "type": "categorical_change",
+            })
+    return changes
+
+
+def _detect_new_tickers(
+    today_df: pd.DataFrame, prev_df: pd.DataFrame,
+    category: str, market: str,
+) -> list[dict]:
+    """ตรวจจับ ticker ที่ปรากฏในวันนี้แต่ไม่มีวันก่อนหน้า"""
+    if "s" not in today_df.columns or "s" not in prev_df.columns:
+        return []
+
+    new_tickers = set(today_df["s"]) - set(prev_df["s"])
+    return [
+        {
+            "ticker": t,
+            "category": category,
+            "market": market,
+            "field": "new_ticker",
+            "old_value": None,
+            "new_value": "NEW",
+            "pct_change": None,
+            "type": "new_ticker",
+        }
+        for t in sorted(new_tickers)[:50]  # จำกัด 50 เพื่อกัน noise
+    ]
+
+
+@task(name="Change Detection")
+def run_change_detection(run_date: str) -> list[dict]:
+    """เปรียบเทียบ silver data วันนี้ vs วันก่อนหน้า เพื่อตรวจจับ anomalies
+    Save ผลลัพธ์ลง data/metrics/changes/{date}.json
+    """
+    log = get_run_logger()
+    all_changes: list[dict] = []
+    categories_checked = 0
+
+    for category in CHANGE_THRESHOLDS.keys() | CATEGORICAL_CHANGES.keys():
+        prev_date = _find_prev_partition(category, run_date)
+        if not prev_date:
+            continue
+
+        today_dir = os.path.join(DATA_DIR, "silver", category, f"date={run_date}")
+        prev_dir = os.path.join(DATA_DIR, "silver", category, f"date={prev_date}")
+        if not os.path.isdir(today_dir):
+            continue
+
+        categories_checked += 1
+
+        # เปรียบเทียบแต่ละ market (us.parquet, th.parquet)
+        for parquet_file in os.listdir(today_dir):
+            if not parquet_file.endswith(".parquet"):
+                continue
+            market = parquet_file.replace(".parquet", "")
+            prev_file = os.path.join(prev_dir, parquet_file)
+            if not os.path.exists(prev_file):
+                continue
+
+            try:
+                today_df = pd.read_parquet(os.path.join(today_dir, parquet_file))
+                prev_df = pd.read_parquet(prev_file)
+            except Exception as e:
+                log.warning("Change detection: could not read %s/%s: %s", category, market, e)
+                continue
+
+            # Numeric changes
+            if category in CHANGE_THRESHOLDS:
+                changes = _detect_numeric_changes(
+                    today_df, prev_df, category, market, CHANGE_THRESHOLDS[category],
+                )
+                all_changes.extend(changes)
+
+            # Categorical changes
+            if category in CATEGORICAL_CHANGES:
+                changes = _detect_categorical_changes(
+                    today_df, prev_df, category, market, CATEGORICAL_CHANGES[category],
+                )
+                all_changes.extend(changes)
+
+            # New tickers
+            new = _detect_new_tickers(today_df, prev_df, category, market)
+            all_changes.extend(new)
+
+    # --- Save results ---
+    result = {
+        "run_date": run_date,
+        "categories_checked": categories_checked,
+        "total_changes": len(all_changes),
+        "changes": all_changes,
+    }
+    filepath = os.path.join(CHANGES_DIR, f"{run_date}.json")
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+        log.info("Change detection: %d changes found across %d categories → %s",
+                 len(all_changes), categories_checked, filepath)
+    except Exception as e:
+        log.warning("Could not save change detection results: %s", e)
+
+    # Log summary
+    if all_changes:
+        by_type = {}
+        for c in all_changes:
+            by_type[c["type"]] = by_type.get(c["type"], 0) + 1
+        log.info("Change detection summary: %s", by_type)
+    else:
+        log.info("Change detection: no significant changes detected.")
+
+    return all_changes
 
 # ---------------------------------------------------------
 # Main Flow
@@ -776,6 +1205,15 @@ def main_flow(run_mode: str = "DAILY") -> dict:
         log.critical("Unknown run_mode='%s'. Valid values: DAILY, INTRADAY. Aborting.", run_mode)
         return {"error": f"Unknown run_mode='{run_mode}'"}
 
+    # --- Weekend check: INTRADAY skip วันเสาร์-อาทิตย์ (US market ปิด) ---
+    if run_mode == "INTRADAY" and not SKIP_WEEKEND_CHECK and not _is_us_trading_day():
+        log.info(
+            "INTRADAY skipped: US market is closed (weekend). "
+            "Set SKIP_WEEKEND_CHECK=true to override."
+        )
+        return {"skipped_reason": "weekend", "success": [], "failed": [], "skipped": [],
+                "rows": {}, "dq_warnings": []}
+
     log.info("Starting Stock Data Pipeline | Mode: %s | Run time: %s",
              run_mode, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
 
@@ -785,7 +1223,6 @@ def main_flow(run_mode: str = "DAILY") -> dict:
         log.critical("Could not initialize session. Aborting.")
         return {"error": "session_init_failed"}
 
-    session_refreshed_this_run = False
 
     # run metadata สำหรับ summary ท้าย run
     meta = {
@@ -801,57 +1238,105 @@ def main_flow(run_mode: str = "DAILY") -> dict:
     run_date  = run_start.strftime("%Y-%m-%d")  # UTC date — ตรงกับ fetched_at ใน Silver layer
 
     # --- Cleanup ก่อน fetch: เคลียร์ partition เก่าเพื่อเปิดพื้นที่ disk ---
-    cleanup_old_partitions()
+    _ = cleanup_old_partitions()
 
-    for item in api_list:
-        json_data, need_refresh = fetch_url(item, session_data)
+    # --- Phase 1: Concurrent fetch — submit ทุก task พร้อมกัน ด้วย staggered delay ---
+    MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", 5))
+    WAVE_DELAY = 3.0  # seconds between each wave (rate-limit ต่อ server)
+    log.info("Fetching %d APIs (max %d per wave, %.0fs between waves)...",
+             len(api_list), MAX_CONCURRENT, WAVE_DELAY)
 
+    # submit ทุก task ทีเดียว — แต่ละ task มี wave_delay ตาม position
+    # wave 0 (task 0-4): delay=0, wave 1 (task 5-9): delay=3s, ...
+    # ถ้า task ใน wave 0 โดน 429 retry → task ใน wave 1+ ไม่ถูก block
+    futures = {}  # {api_name: (item, future)}
+    for idx, item in enumerate(api_list):
+        wave = idx // MAX_CONCURRENT
+        delay = wave * WAVE_DELAY
+        future = fetch_url.submit(item, session_data, delay)
+        futures[item["name"]] = (item, future)
+
+    # เก็บผลทั้งหมด (truly concurrent — ไม่ block ข้าม wave)
+    results = {}
+    for name, (item, future) in futures.items():
+        json_data, need_refresh = future.result()
+        results[name] = (item, json_data, need_refresh)
+
+    # --- Phase 2: Handle 403 — refresh session แล้ว re-fetch เฉพาะตัวที่ fail ---
+    needs_refresh = [name for name, (_, _, nr) in results.items() if nr]
+    if needs_refresh:
+        log.warning("%d API(s) returned 403, refreshing session...", len(needs_refresh))
+        new_session_data = refresh_session_task()
+        meta["session_type"] = "refreshed"
+
+        if _is_valid_session(new_session_data):
+            session_data = new_session_data
+
+            # re-fetch เฉพาะตัวที่ 403
+            retry_futures = {}
+            for name in needs_refresh:
+                item = results[name][0]
+                future = fetch_url.submit(item, session_data)
+                retry_futures[name] = (item, future)
+
+            for name, (item, future) in retry_futures.items():
+                json_data, need_refresh = future.result()
+                if need_refresh or json_data is None:
+                    log.error("%s: Still failed after refresh, skipping.", name)
+                    results[name] = (item, None, False)  # mark as failed
+                    meta["skipped"].append(name)
+                else:
+                    results[name] = (item, json_data, False)
+        else:
+            log.error("Session refresh failed, skipping all 403 APIs.")
+            meta["session_type"] = "fallback"
+            for name in needs_refresh:
+                meta["skipped"].append(name)
+
+    # --- Phase 3: Save Bronze + Silver สำหรับ API ที่สำเร็จ ---
+    for name, (item, json_data, need_refresh) in results.items():
         if need_refresh:
-            if session_refreshed_this_run:
-                log.error("%s: Still 403 after refresh, skipping.", item["name"])
-                meta["skipped"].append(item["name"])
-                continue
-
-            log.warning("Refreshing session at flow level (once per run)...")
-            new_session_data = refresh_session_with_playwright()
-            session_refreshed_this_run = True
-            meta["session_type"] = "refreshed"
-
-            if not new_session_data:
-                log.error("%s: Refresh failed, skipping.", item["name"])
-                meta["skipped"].append(item["name"])
-                continue
-
-            if new_session_data.get("headers") and new_session_data.get("cookies"):
-                session_data = new_session_data
-            else:
-                log.warning("Incomplete session data, keeping old session.")
-                meta["session_type"] = "fallback"
-
-            json_data, need_refresh = fetch_url(item, session_data)
-            if need_refresh or json_data is None:
-                log.error("%s: Failed after refresh, skipping.", item["name"])
-                meta["skipped"].append(item["name"])
-                continue
+            # ยังไม่ถูก handle ใน Phase 2 (ไม่ควรเกิด แต่ safe guard)
+            meta["skipped"].append(name)
+            continue
 
         if json_data:
             items = extract_items(json_data)
-            meta["success"].append(item["name"])
-            meta["rows"][item["name"]] = len(items)
-            save_bronze_layer(json_data, item["name"], run_date)
-            warnings = save_silver_layer(json_data, item["name"], run_date)
+            if not items:
+                log.warning("%s: No tabular data extracted, skipping.", name)
+                meta["failed"].append(name)
+                continue
+            meta["success"].append(name)
+            meta["rows"][name] = len(items)
+            save_bronze_layer(json_data, name, run_date)
+            warnings = save_silver_layer(items, name, run_date)
             if warnings:
                 meta["dq_warnings"].extend(warnings)
         else:
-            log.warning("%s: No data fetched, skipping.", item["name"])
-            meta["failed"].append(item["name"])
+            if name not in meta["skipped"]:
+                log.warning("%s: No data fetched, skipping.", name)
+                meta["failed"].append(name)
 
-    # --- Run Summary ---
+    # --- Run Summary (ส่วนที่ไม่เกี่ยวกับ DQ) ---
     duration  = (datetime.now(timezone.utc) - run_start).total_seconds()
     total_rows = sum(meta["rows"].values())
     us_rows   = sum(v for k, v in meta["rows"].items() if k.startswith("us_"))
     th_rows   = sum(v for k, v in meta["rows"].items() if k.startswith("th_"))
 
+    # --- Gold Layer: merge US+TH + computed columns ---
+    if meta["success"]:
+        gold_count, gold_warnings = save_gold_layer(run_date)
+        if gold_warnings:
+            meta["dq_warnings"].extend(gold_warnings)
+        log.info("Gold layer: %d category(ies) created.", gold_count)
+
+    # --- Change Detection: เปรียบเทียบกับวันก่อนหน้า (เฉพาะ DAILY) ---
+    if run_mode == "DAILY" and meta["success"]:
+        cd_changes = run_change_detection(run_date)
+        if cd_changes:
+            meta["changes_detected"] = len(cd_changes)
+
+    # --- Run Summary (log หลัง Gold เพื่อให้ DQ warnings ครบ) ---
     log.info("=" * 60)
     log.info("Run Summary")
     log.info("=" * 60)
@@ -872,13 +1357,11 @@ def main_flow(run_mode: str = "DAILY") -> dict:
             log.warning("  [!] %s", w)
     log.info("=" * 60)
 
-    # --- Alert: ส่ง notification ถ้ามี issue ---
+    # --- Alert: ส่ง notification หลัง Gold layer เพื่อให้ DQ warnings ครบทุก layer ---
     _send_alert_if_needed(meta, run_mode, duration, total_rows, len(api_list), log)
 
-    # --- Gold Layer: merge US+TH + computed columns ---
-    if meta["success"]:
-        gold_count = save_gold_layer(run_date)
-        log.info("Gold layer: %d category(ies) created.", gold_count)
+    # --- Persist run metrics สำหรับ Dashboard ---
+    _save_run_metrics(meta, run_mode, run_date, run_start, duration, total_rows, log)
 
     return meta
 
@@ -901,10 +1384,37 @@ if __name__ == "__main__":
     daily_serve    = flow(name="Daily Flow - Fundamentals")(_make_daily_flow)
     intraday_serve = flow(name="Intraday Flow - Market Movers")(_make_intraday_flow)
 
-    # รันทันทีตอน startup
+    # รันทันทีตอน startup — เก็บ meta เพื่อ print combined summary
     logger.info("Running all modes immediately on startup...")
-    main_flow(run_mode="DAILY")
-    main_flow(run_mode="INTRADAY")
+    startup_start = datetime.now(timezone.utc)
+    daily_meta    = main_flow(run_mode="DAILY")
+    intraday_meta = main_flow(run_mode="INTRADAY")
+    startup_secs  = (datetime.now(timezone.utc) - startup_start).total_seconds()
+
+    # --- Combined Startup Summary ---
+    logger.info("=" * 60)
+    logger.info("STARTUP SUMMARY")
+    logger.info("=" * 60)
+    for mode, meta in [("DAILY", daily_meta), ("INTRADAY", intraday_meta)]:
+        if isinstance(meta, dict) and "success" in meta:
+            total = len(meta.get("success", [])) + len(meta.get("failed", [])) + len(meta.get("skipped", []))
+            rows  = sum(meta.get("rows", {}).values())
+            logger.info("  %-10s: %d/%d APIs OK | %d rows | %d warnings",
+                        mode, len(meta["success"]), total, rows, len(meta.get("dq_warnings", [])))
+        else:
+            logger.warning("  %-10s: ERROR — %s", mode, meta)
+    logger.info("-" * 60)
+    logger.info("  Total time: %.1fs", startup_secs)
+    # DQ warnings รวม
+    all_warnings = []
+    for meta in [daily_meta, intraday_meta]:
+        if isinstance(meta, dict):
+            all_warnings.extend(meta.get("dq_warnings", []))
+    if all_warnings:
+        logger.warning("  DQ issues : %d warning(s)", len(all_warnings))
+        for w in all_warnings:
+            logger.warning("    [!] %s", w)
+    logger.info("=" * 60)
 
     logger.info(
         "Starting Prefect schedulers:\n"

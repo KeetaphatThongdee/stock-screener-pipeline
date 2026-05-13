@@ -20,26 +20,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ติด Chromium เท่านั้น (ไม่ใช่ --with-deps เพราะลงไปแล้วข้างบน)
-RUN playwright install chromium
+# Pin Chromium build 1200 (v143.0.7499.4) ให้ตรงกับ playwright==1.57.0
+# ถ้า upgrade playwright ใน requirements.txt ให้อัพ build number ด้วย:
+#   playwright install --dry-run chromium → ดู build number ที่ต้องการ
+RUN playwright install chromium --with-deps=false
+
+# --- Security Hardening ---
+# สร้าง non-root user สำหรับรัน application
+# UID 1000 เป็น convention สำหรับ first non-root user
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home appuser \
+    && mkdir -p /data/session /data/metrics/runs /data/metrics/changes \
+    && chown -R appuser:appuser /data \
+    && chown -R appuser:appuser /root/.cache/ms-playwright 2>/dev/null || true
 
 # copy โค้ด (แยก layer ไว้ท้ายสุด เพราะเปลี่ยนบ่อยที่สุด)
-COPY . .
+COPY --chown=appuser:appuser . .
 
-# HEALTHCHECK เช็คว่า silver partition ของวันนี้ถูกสร้างแล้ว
-# --start-period=5m  : รอให้ startup run เสร็จก่อนเริ่ม check
-# --interval=30m     : check ทุก 30 นาที (pipeline รันวันละครั้ง ไม่ต้องถี่)
-# --timeout=10s      : ถ้า check ค้างเกิน 10s ถือว่า fail
-# --retries=2        : fail 2 ครั้งติดต่อกันถึงจะ mark เป็น unhealthy
+# สลับไปใช้ non-root user — ป้องกันไม่ให้ process ภายใน container
+# มีสิทธิ์ root ซึ่งลดความเสี่ยงหาก container ถูก compromise
+USER appuser
+
+# HEALTHCHECK — ตรวจว่า silver partition ล่าสุดยังสดอยู่ (ไม่เกิน 25 ชม.)
+# แยกเป็น healthcheck.py เพื่อให้อ่านง่ายและ maintain ได้
 HEALTHCHECK --start-period=5m --interval=30m --timeout=10s --retries=2 \
-    CMD python -c "\
-import os, sys, datetime; \
-today = datetime.date.today().isoformat(); \
-silver = '/data/silver'; \
-found = any( \
-    os.path.isdir(os.path.join(silver, cat, f'date={today}')) \
-    for cat in os.listdir(silver) \
-) if os.path.isdir(silver) else False; \
-sys.exit(0 if found else 1)"
+    CMD ["python", "healthcheck.py"]
 
 CMD ["python", "main.py"]
